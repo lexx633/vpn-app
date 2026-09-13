@@ -122,12 +122,14 @@ jobs:
       - name: Flatten APK for upload
         run: cp "${{ steps.apk.outputs.path }}" limm-vpn-upload.apk
 
-      # Deploy to limm.space. Secret DEPLOY_SSH_KEY: private key for deploy@45.95.175.170
+      # Deploy to limm.space (веб-хаб — pl2 31.58.51.229 с 2026-09-13; раньше был FR1).
+      # Хост/пользователь/ключ — в секретах: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
+      # При следующем переезде хаба правится секрет, а не этот файл.
       - name: Upload APK to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: 45.95.175.170
-          username: deploy
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           source: limm-vpn-upload.apk
           target: /tmp/
@@ -135,17 +137,28 @@ jobs:
       - name: Deploy APK and update apk-info.json
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 45.95.175.170
-          username: deploy
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
-            # Deploy as hash-named file (limm-vpn_XXX.apk, first 3 chars of SHA)
+            set -e
+            # APK на сервере — ЕДИНЫЙ файл limm-vpn.apk, перезаписывается на месте
+            # (CLAUDE.md §НИКОГДА). Хеш-именованные limm-vpn_XXX.apk не создаём и
+            # подметаем остатки прежней схемы. Версию различает apk-info.json.
+            mv -f /tmp/limm-vpn-upload.apk /var/www/limm/vpn/limm-vpn.apk
+            chmod 644 /var/www/limm/vpn/limm-vpn.apk
+            rm -f /var/www/limm/vpn/limm-vpn_*.apk
+            # apk-info.json — источник версии для дашборда и клиента.
+            # build печатается ВЕЗДЕ первыми 3 символами (CLAUDE.md §НИКОГДА).
             SHORTHASH=$(echo "${{ github.sha }}" | cut -c1-3)
-            find /var/www/limm/vpn -maxdepth 1 -name 'limm-vpn_*.apk' -delete
-            mv -f /tmp/limm-vpn-upload.apk /var/www/limm/vpn/limm-vpn_${SHORTHASH}.apk
-            chmod 644 /var/www/limm/vpn/limm-vpn_${SHORTHASH}.apk
-            # apk-info.json — единственный источник версии; download-page строит URL
-            # из build[:3] → limm-vpn_XXX.apk. _app_redirect.conf не трогаем —
-            # /vpn/app теперь перенаправляет на app.html (не на APK напрямую).
-            echo '{"build":"${{ github.sha }}","version":"${{ inputs.version }}"}' \
+            printf '{"build":"%s","version":"%s"}' \
+              '${{ github.sha }}' '${{ inputs.version }}' \
               > /var/www/limm/vpn/apk-info.json
+            chmod 644 /var/www/limm/vpn/apk-info.json
+            # apk-version.js — из него app.html берёт подпись кнопки (window.APK_VER).
+            # Без этого шага страница показывала бы версию предыдущей сборки.
+            printf 'window.APK_VER={"ver":"%s","url":"/vpn/limm-vpn.apk","hash":"%s"};' \
+              '${{ inputs.version }}' "$SHORTHASH" \
+              > /var/www/limm/vpn/apk-version.js
+            chmod 644 /var/www/limm/vpn/apk-version.js
+            echo "Deployed limm-vpn.apk v${{ inputs.version }} #${SHORTHASH}"
